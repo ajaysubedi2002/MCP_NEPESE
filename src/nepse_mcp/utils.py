@@ -2,6 +2,9 @@ import re
 from datetime import datetime
 from typing import Any, Optional
 
+import httpx
+
+from nepse_mcp.config import settings
 from nepse_mcp.schemas import (
     BaseMarketItem,
     CompactDividendRecord,
@@ -30,7 +33,59 @@ class NepseAPIError(Exception):
         return self.message
 
 
+class JevAPIError(Exception):
+    """Raised when the Jev System One request cannot be completed safely."""
+
+
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.&-]{0,19}$")
+
+
+def clean_ticker(symbol: str) -> str:
+    """Normalize and validate a NEPSE ticker symbol."""
+    if not isinstance(symbol, str):
+        raise ValueError("Stock symbol must be a string.")
+    clean_symbol = symbol.strip().upper()
+    if not clean_symbol or not _TICKER_PATTERN.fullmatch(clean_symbol):
+        raise ValueError(
+            f"Invalid stock symbol '{symbol}'. Use a listed ticker such as 'NABIL'."
+        )
+    return clean_symbol
+
+
+async def call_jev_decision(
+    state: Any,
+    questions: dict[str, Any],
+    model: str = "jev-latest",
+) -> dict[str, Any]:
+    """Call Jev System One and validate its structured response."""
+    api_key = settings.jevmodel_api_key or settings.jev_api_key or settings.typesafe_api_key
+    if not api_key:
+        raise JevAPIError(
+            "Jev API key is not configured. Set JEVMODEL_API_KEY, JEV_API_KEY, or TYPESAFE_API_KEY."
+        )
+    payload = {"state": state, "model": model, "questions": questions}
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=settings.jev_http_timeout) as client:
+            response = await client.post(settings.jev_api_url, headers=headers, json=payload)
+            response.raise_for_status()
+    except httpx.TimeoutException as exc:
+        raise JevAPIError("Jev API timeout.") from exc
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403):
+            raise JevAPIError("Jev API authentication failure.") from exc
+        raise JevAPIError(f"Jev API HTTP error ({exc.response.status_code}).") from exc
+    except httpx.RequestError as exc:
+        raise JevAPIError("Jev API connection failure.") from exc
+
+    try:
+        result = response.json()
+    except ValueError as exc:
+        raise JevAPIError("Jev returned malformed JSON.") from exc
+    if not isinstance(result, dict) or not isinstance(result.get("answers"), dict):
+        raise JevAPIError("Jev returned a malformed response: missing answers.")
+    return result
 
 
 def validate_date_format(date_str: str) -> None:
