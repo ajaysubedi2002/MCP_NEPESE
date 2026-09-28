@@ -1,10 +1,16 @@
-from typing import Annotated, Literal, Optional
+import json
+import re
+from typing import Any, Annotated, Literal, Optional
 
 from nepse_mcp.client import NepseAPIClient
+from nepse_mcp.config import settings
 from nepse_mcp.resources import ANALYSIS_RULES, MARKET_GLOSSARY
 from nepse_mcp.utils import (
+    JevAPIError,
     NepseAPIError,
     build_tool_response,
+    call_jev_decision,
+    clean_ticker,
     summarize_history_gaps,
     to_compact_dividend_record,
     to_compact_live_result,
@@ -34,7 +40,7 @@ def register_tools(mcp) -> None:
     ) -> dict:
         """Get current trading data for one stock or the whole market."""
         try:
-            clean_symbol = stock_symbol.strip().upper() if stock_symbol else ""
+            clean_symbol = clean_ticker(stock_symbol) if stock_symbol else ""
             async with NepseAPIClient() as client:
                 result = await client.get_stock_live(stock_symbol=clean_symbol)
             compact = to_compact_live_result(result)
@@ -79,7 +85,7 @@ def register_tools(mcp) -> None:
         try:
             async with NepseAPIClient() as client:
                 snapshot = await client.get_stock_snapshot(
-                    stock_symbol=stock_symbol.strip().upper()
+                    stock_symbol=clean_ticker(stock_symbol)
                 )
             return build_tool_response(data=snapshot.model_dump())
         except NepseAPIError as exc:
@@ -108,7 +114,7 @@ def register_tools(mcp) -> None:
         try:
             async with NepseAPIClient() as client:
                 page = await client.get_dividend_rights(
-                    stock_symbol=stock_symbol.strip().upper(),
+                    stock_symbol=clean_ticker(stock_symbol),
                     fiscal_year_id=fiscal_year_id,
                     page_no=page_no,
                     items_per_page=min(limit, 100),
@@ -122,7 +128,7 @@ def register_tools(mcp) -> None:
                     else None
                 ),
                 source_gap_detected=has_more,
-                stock_symbol=stock_symbol.strip().upper(),
+                stock_symbol=clean_ticker(stock_symbol),
                 page_no=page.pager.pageNo,
                 has_more_data=has_more,
                 total_additional_pages=page.pager.totalNextPages,
@@ -166,7 +172,7 @@ def register_tools(mcp) -> None:
         try:
             async with NepseAPIClient() as client:
                 page = await client.get_stock_history(
-                    stock_symbol=stock_symbol.strip().upper(),
+                    stock_symbol=clean_ticker(stock_symbol),
                     from_date=from_date,
                     to_date=to_date,
                     page_no=page_no,
@@ -181,7 +187,7 @@ def register_tools(mcp) -> None:
                     else None
                 ),
                 source_gap_detected=has_more,
-                stock_symbol=stock_symbol.strip().upper(),
+                stock_symbol=clean_ticker(stock_symbol),
                 from_date=from_date,
                 to_date=to_date,
                 page_no=page.pager.pageNo,
@@ -337,3 +343,205 @@ def register_tools(mcp) -> None:
     async def get_analysis_rules() -> dict:
         """Return the static analysis rules as a tool payload."""
         return build_tool_response(data=ANALYSIS_RULES)
+
+    @mcp.tool(
+        name="evaluate_jev_decision",
+        description=(
+            "Evaluate arbitrary structured state with Jev System One using choice, score, "
+            "or noul questions. Returns Jev's raw probabilistic response."
+        ),
+    )
+    async def evaluate_jev_decision(
+        state: Any,
+        questions: dict[str, Any],
+        model: str = settings.jev_model,
+    ) -> dict:
+        """Expose the generic Jev decision API without NEPSE-specific assumptions."""
+        try:
+            return await call_jev_decision(state=state, questions=questions, model=model)
+        except JevAPIError as exc:
+            return build_tool_response(status="error", error_message=str(exc))
+
+    @mcp.tool(
+        name="evaluate_stock_risk_and_momentum",
+        description=(
+            "Evaluate a stock's historical momentum, volatility, market condition, and "
+            "execution safety with Jev. This is an analysis signal, not trade execution."
+        ),
+    )
+    async def evaluate_stock_risk_and_momentum(
+        stock_symbol: Annotated[str, "Ticker symbol, e.g. 'NABIL'."],
+        from_date: Annotated[str, "Start date in YYYY-MM-DD format."],
+        to_date: Annotated[str, "End date in YYYY-MM-DD format."],
+    ) -> dict:
+        """Build a market-data state and ask Jev for risk and momentum signals."""
+        try:
+            symbol = clean_ticker(stock_symbol)
+            validate_date_format(from_date)
+            validate_date_format(to_date)
+            async with NepseAPIClient() as client:
+                summary = await client.get_price_history_summary(symbol, from_date, to_date)
+            state = {
+                "symbol": symbol,
+                "period": {"from": from_date, "to": to_date},
+                "metrics": {
+                    "return_pct": summary.percentReturn,
+                    "volatility_pct": summary.volatility,
+                    "average_volume": summary.averageVolume,
+                    "average_turnover": summary.averageTurnover,
+                    "latest_price": summary.lastClose,
+                    "trend": summary.trend,
+                    "volume_trend": summary.volumeTrend,
+                    "record_count": summary.recordCount,
+                },
+            }
+            questions = {
+                "momentum": {
+                    "type": "choice",
+                    "instructions": "Classify the stock's price momentum.",
+                    "criteria": {
+                        "bullish": "Strong positive momentum",
+                        "neutral": "Mixed or weakly directional momentum",
+                        "bearish": "Negative momentum",
+                    },
+                },
+                "volatility": {
+                    "type": "score",
+                    "instructions": "Score the volatility risk from 0 to 1.",
+                },
+                "market_condition": {
+                    "type": "choice",
+                    "instructions": "Classify the observed market condition.",
+                    "criteria": {
+                        "favorable": "Positive return and orderly trading",
+                        "mixed": "Conflicting or incomplete signals",
+                        "unfavorable": "Negative return or stressed trading",
+                    },
+                },
+                "execution_safety": {
+                    "type": "noul",
+                    "instructions": (
+                        "Assess whether the available market data is sufficient for "
+                        "automated trade execution; do not issue a trade instruction."
+                    ),
+                },
+            }
+            result = await call_jev_decision(state, questions, settings.jev_model)
+            return build_tool_response(data=result, jev_state=state, analysis_only=True)
+        except ValueError as exc:
+            return build_tool_response(status="error", error_message=str(exc))
+        except (JevAPIError, NepseAPIError) as exc:
+            return build_tool_response(status="error", error_message=str(exc))
+
+    routed_tools = {
+        "search_companies",
+        "get_stock_snapshot",
+        "get_price_history_summary",
+        "compare_stocks",
+        "get_live_market_data",
+        "get_dividend_history",
+        "get_top_market_movers",
+    }
+    routing_questions = {
+        "target_tool": {
+            "type": "choice",
+            "instructions": "Which NEPSE tool is best suited to answer this user query?",
+            "criteria": {
+                "search_companies": "Search ticker symbols or company names",
+                "get_stock_snapshot": "Get current price or a single-stock overview",
+                "get_price_history_summary": "Analyze historical prices, trends, returns, or volatility",
+                "compare_stocks": "Compare two or more stocks",
+                "get_live_market_data": "Get current overall market data",
+                "get_dividend_history": "Get dividend, bonus, cash, or fiscal-year history",
+                "get_top_market_movers": "Find top gainers, losers, turnover, or volume",
+                "llm_fallback": "Ambiguous or multi-step reasoning requests",
+            },
+        }
+    }
+
+    def extract_route_arguments(query: str, tool_name: str) -> dict[str, Any] | None:
+        """Extract only simple, unambiguous arguments; never guess complex ones."""
+        words = re.findall(r"\b[A-Za-z][A-Za-z0-9.&-]{1,19}\b", query)
+        excluded = {"WHAT", "SHOW", "THE", "CURRENT", "PRICE", "OF", "FOR", "AND", "FROM", "TO"}
+        symbols = [word.upper() for word in words if word.upper() not in excluded]
+        dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", query)
+        if tool_name == "search_companies":
+            return {"query": query}
+        if tool_name in {"get_stock_snapshot", "get_live_market_data", "get_dividend_history"}:
+            if not symbols:
+                return None
+            return {"stock_symbol": clean_ticker(symbols[0])}
+        if tool_name == "get_price_history_summary":
+            if not symbols or len(dates) < 2:
+                return None
+            return {"stock_symbol": clean_ticker(symbols[0]), "from_date": dates[0], "to_date": dates[1]}
+        return None
+
+    @mcp.tool(
+        name="route_and_process_request",
+        description=(
+            "Recommended entry point for NEPSE requests. Uses Jev System One for intent "
+            "classification and delegates uncertain or complex requests to System Two."
+        ),
+    )
+    async def route_and_process_request(user_query: Annotated[str, "The user's NEPSE request."]) -> dict:
+        """Classify a query with Jev and invoke only an allowlisted tool."""
+        try:
+            jev_result = await call_jev_decision(user_query, routing_questions, settings.jev_model)
+        except JevAPIError:
+            return {
+                "status": "fallback",
+                "system": "jev-system-one",
+                "reason": "jev_unavailable",
+                "next_system": "system-two-llm",
+            }
+        answer = jev_result.get("answers", {}).get("target_tool")
+        if not isinstance(answer, dict):
+            return {
+                "status": "fallback",
+                "system": "jev-system-one",
+                "reason": "jev_malformed_response",
+                "next_system": "system-two-llm",
+            }
+        selected_tool = answer.get("choice")
+        confidence = answer.get("confidence")
+        probabilities = answer.get("probabilities", {})
+        if not isinstance(selected_tool, str) or not isinstance(confidence, (int, float)):
+            return {
+                "status": "fallback",
+                "system": "jev-system-one",
+                "reason": "jev_malformed_response",
+                "next_system": "system-two-llm",
+            }
+        execution = {
+            "status": "delegated",
+            "reason": "Jev confidence is below the configured threshold",
+            "next_system": "system-two-llm",
+        }
+        if selected_tool == "llm_fallback":
+            execution["reason"] = "Jev selected llm_fallback"
+        elif selected_tool in routed_tools and confidence >= settings.jev_confidence_threshold:
+            arguments = extract_route_arguments(user_query, selected_tool)
+            if arguments is not None:
+                result = await mcp.call_tool(selected_tool, arguments)
+                routed_data = getattr(result, "data", None)
+                if routed_data is None and getattr(result, "content", None):
+                    routed_data = json.loads(result.content[0].text)
+                return {
+                    "status": "routed",
+                    "system": "jev-system-one",
+                    "selected_tool": selected_tool,
+                    "confidence": confidence,
+                    "probabilities": probabilities,
+                    "execution": {"status": "executed", "tool": selected_tool},
+                    "result": routed_data,
+                }
+            execution["reason"] = "Required tool arguments could not be extracted safely"
+        return {
+            "status": "fallback",
+            "system": "jev-system-one",
+            "selected_tool": selected_tool,
+            "confidence": confidence,
+            "probabilities": probabilities,
+            "execution": execution,
+        }
