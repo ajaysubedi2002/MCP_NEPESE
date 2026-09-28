@@ -7,6 +7,7 @@ import httpx
 from fastmcp import Client
 
 # Import the mcp instance AFTER all tools/resources are registered
+from nepse_mcp.config import settings
 from nepse_mcp.main import mcp
 
 
@@ -764,3 +765,65 @@ async def test_get_price_history_summary_tool_empty_history():
     payload = json.loads(result.content[0].text)
     assert payload["status"] == "error"
     assert "No price history found" in payload["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_route_and_process_request_executes_high_confidence_tool(monkeypatch):
+    monkeypatch.setattr(settings, "jevmodel_api_key", "test-key")
+    with respx.mock:
+        respx.post(settings.jev_api_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "model": "jev-1.13.0",
+                    "answers": {
+                        "target_tool": {
+                            "type": "choice",
+                            "choice": "get_stock_snapshot",
+                            "confidence": 0.91,
+                            "probabilities": {"get_stock_snapshot": 0.91},
+                        }
+                    },
+                },
+            )
+        )
+        respx.get("https://nepalipaisa.com/api/GetStockLive").mock(
+            return_value=httpx.Response(200, json=STOCK_LIVE_RESPONSE)
+        )
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "route_and_process_request", {"user_query": "What is the current price of NABIL?"}
+            )
+
+    payload = json.loads(result.content[0].text)
+    assert payload["status"] == "routed"
+    assert payload["selected_tool"] == "get_stock_snapshot"
+    assert payload["execution"]["status"] == "executed"
+
+
+@pytest.mark.asyncio
+async def test_route_and_process_request_falls_back_on_low_confidence(monkeypatch):
+    monkeypatch.setattr(settings, "jevmodel_api_key", "test-key")
+    with respx.mock:
+        respx.post(settings.jev_api_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "answers": {
+                        "target_tool": {
+                            "type": "choice",
+                            "choice": "get_stock_snapshot",
+                            "confidence": 0.42,
+                        }
+                    }
+                },
+            )
+        )
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "route_and_process_request", {"user_query": "Tell me something about NABIL."}
+            )
+
+    payload = json.loads(result.content[0].text)
+    assert payload["status"] == "fallback"
+    assert payload["execution"]["next_system"] == "system-two-llm"
