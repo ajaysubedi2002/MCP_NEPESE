@@ -49,3 +49,25 @@ def register_prompts(mcp) -> None:
                 ),
             )
         ]
+
+    @mcp.prompt(
+        name="analyze_nepse_stock_with_jev",
+        description="Guide System Two through NEPSE analysis with a Jev System One risk signal.",
+    )
+    def analyze_nepse_stock_with_jev(ticker: str) -> list[Message]:
+        clean_symbol = ticker.strip().upper()
+        today = datetime.date.today()
+        from_date = today - datetime.timedelta(days=30)
+        return [
+            Message(
+                role="user",
+                content=(
+                    f"Analyze NEPSE stock '{clean_symbol}' using observed market data and Jev. "
+                    f"First call get_price_history_summary for {from_date.isoformat()} through {today.isoformat()}, "
+                    "then call evaluate_stock_risk_and_momentum with the same period. "
+                    "Clearly separate observed market data, Jev choices/confidence/probabilities, and your interpretation. "
+                    "Treat Jev as a probabilistic decision signal, not a guaranteed prediction or financial advice. "
+                    "Do not execute or recommend an automated trade. State any incomplete data or tool errors explicitly."
+                ),
+            )
+        ]
