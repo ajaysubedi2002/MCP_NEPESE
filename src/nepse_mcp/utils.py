@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
+from langsmith import traceable
 
 from nepse_mcp.config import settings
 from nepse_mcp.schemas import (
@@ -53,6 +54,7 @@ def clean_ticker(symbol: str) -> str:
     return clean_symbol
 
 
+@traceable(name="jev-system-one", run_type="llm", tags=["jev", "nepse"])
 async def call_jev_decision(
     state: Any,
     questions: dict[str, Any],

@@ -1,6 +1,7 @@
 import json
 import re
 from typing import Any, Annotated, Literal, Optional
+from langsmith import traceable
 
 from nepse_mcp.client import NepseAPIClient
 from nepse_mcp.config import settings
@@ -23,7 +24,18 @@ from nepse_mcp.utils import (
 def register_tools(mcp) -> None:
     """Register all MCP tools on the given FastMCP instance."""
 
-    @mcp.tool(
+    def traced_tool(*, name: str, description: str):
+        def decorator(function):
+            traced_function = traceable(
+                name=name,
+                run_type="tool",
+                tags=["mcp", "nepse", name],
+            )(function)
+            return mcp.tool(name=name, description=description)(traced_function)
+
+        return decorator
+
+    @traced_tool(
         name="get_live_market_data",
         description=(
             "Retrieve current/live trading data (price, volume, high/low, % change) "
@@ -48,7 +60,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="search_companies",
         description=(
             "Search the NEPSE company directory by ticker symbol or company name. "
@@ -71,7 +83,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="get_stock_snapshot",
         description=(
             "Return a compact live snapshot for a single NEPSE stock. "
@@ -91,7 +103,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="get_dividend_history",
         description=(
             "Retrieve historical corporate actions, specifically bonus shares, "
@@ -137,7 +149,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="get_price_history",
         description=(
             "Retrieve daily OHLC (Open, High, Low, Close) price history and volume "
@@ -200,7 +212,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="get_price_history_summary",
         description=(
             "Return compact, derived price-history metrics for a single stock over a date range. "
@@ -239,7 +251,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="get_top_market_movers",
         description=(
             "Retrieve a ranked list of NEPSE stocks by a chosen market indicator. "
@@ -278,7 +290,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="compare_stocks",
         description=(
             "Compare multiple NEPSE stocks by a fixed metric and return ranked compact results. "
@@ -320,7 +332,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="get_market_glossary",
         description=(
             "Return definitions for NEPSE field names, indicators, sectors, and response flags. "
@@ -332,7 +344,7 @@ def register_tools(mcp) -> None:
         """Return the static market glossary as a tool payload."""
         return build_tool_response(data=MARKET_GLOSSARY)
 
-    @mcp.tool(
+    @traced_tool(
         name="get_analysis_rules",
         description=(
             "Return interpretation rules for momentum, dividends, and common caveats. "
@@ -344,7 +356,7 @@ def register_tools(mcp) -> None:
         """Return the static analysis rules as a tool payload."""
         return build_tool_response(data=ANALYSIS_RULES)
 
-    @mcp.tool(
+    @traced_tool(
         name="evaluate_jev_decision",
         description=(
             "Evaluate arbitrary structured state with Jev System One using choice, score, "
