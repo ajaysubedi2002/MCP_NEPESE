@@ -411,7 +411,7 @@ async def test_companies_resource_is_listed():
 @pytest.mark.asyncio
 async def test_companies_resource_returns_data():
     with respx.mock:
-        respx.get("https://nepalipaisa.com/api/GetCompanies").mock(
+        respx.post("https://nepalipaisa.com/api/GetCompanies").mock(
             return_value=httpx.Response(200, json=COMPANIES_RESPONSE)
         )
         async with Client(mcp) as client:
@@ -517,7 +517,7 @@ async def test_get_analysis_rules_tool():
 @pytest.mark.asyncio
 async def test_search_companies_tool():
     with respx.mock:
-        respx.get("https://nepalipaisa.com/api/GetCompanies").mock(
+        respx.post("https://nepalipaisa.com/api/GetCompanies").mock(
             return_value=httpx.Response(200, json=COMPANIES_RESPONSE)
         )
         async with Client(mcp) as client:
@@ -700,7 +700,7 @@ async def test_compare_stocks_tool_uses_thirty_day_return():
 @pytest.mark.asyncio
 async def test_search_companies_tool_returns_empty_matches():
     with respx.mock:
-        respx.get("https://nepalipaisa.com/api/GetCompanies").mock(
+        respx.post("https://nepalipaisa.com/api/GetCompanies").mock(
             return_value=httpx.Response(200, json=COMPANIES_RESPONSE)
         )
         async with Client(mcp) as client:
