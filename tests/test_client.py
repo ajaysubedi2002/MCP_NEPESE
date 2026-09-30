@@ -276,7 +276,7 @@ ERROR_BODY_RESPONSE = {
 @pytest.mark.asyncio
 async def test_get_companies_happy_path():
     with respx.mock:
-        respx.get("https://nepalipaisa.com/api/GetCompanies").mock(
+        respx.post("https://nepalipaisa.com/api/GetCompanies").mock(
             return_value=httpx.Response(200, json=COMPANIES_RESPONSE)
         )
         async with NepseAPIClient() as client:
@@ -358,7 +358,7 @@ async def test_get_top_market_movers_happy_path():
 @pytest.mark.asyncio
 async def test_non_200_status_code_in_body_raises_error():
     with respx.mock:
-        respx.get("https://nepalipaisa.com/api/GetCompanies").mock(
+        respx.post("https://nepalipaisa.com/api/GetCompanies").mock(
             return_value=httpx.Response(200, json=ERROR_BODY_RESPONSE)
         )
         async with NepseAPIClient() as client:
@@ -369,7 +369,7 @@ async def test_non_200_status_code_in_body_raises_error():
 @pytest.mark.asyncio
 async def test_http_error_raises_nepse_api_error():
     with respx.mock:
-        respx.get("https://nepalipaisa.com/api/GetCompanies").mock(
+        respx.post("https://nepalipaisa.com/api/GetCompanies").mock(
             return_value=httpx.Response(500)
         )
         async with NepseAPIClient() as client:
@@ -380,7 +380,7 @@ async def test_http_error_raises_nepse_api_error():
 @pytest.mark.asyncio
 async def test_timeout_raises_nepse_api_error():
     with respx.mock:
-        respx.get("https://nepalipaisa.com/api/GetCompanies").mock(
+        respx.post("https://nepalipaisa.com/api/GetCompanies").mock(
             side_effect=httpx.TimeoutException("timed out")
         )
         async with NepseAPIClient() as client:
@@ -391,7 +391,7 @@ async def test_timeout_raises_nepse_api_error():
 @pytest.mark.asyncio
 async def test_search_companies_prefers_exact_symbol_match():
     with respx.mock:
-        respx.get("https://nepalipaisa.com/api/GetCompanies").mock(
+        respx.post("https://nepalipaisa.com/api/GetCompanies").mock(
             return_value=httpx.Response(
                 200,
                 json={

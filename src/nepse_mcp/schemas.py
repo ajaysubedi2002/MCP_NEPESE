@@ -1,9 +1,22 @@
-from typing import Generic, List, Optional, TypeVar, Literal
+from typing import Any, Generic, List, Optional, TypeVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 
 T = TypeVar("T")
+
+
+class JevDecisionRequest(BaseModel):
+    state: Any
+    questions: dict[str, Any]
+    model: str = "jev-latest"
+
+    @field_validator("questions")
+    @classmethod
+    def require_questions(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
+            raise ValueError("questions must contain at least one Jev question")
+        return value
 
 
 class Pager(BaseModel):
