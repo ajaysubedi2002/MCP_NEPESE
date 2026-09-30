@@ -125,11 +125,49 @@ class NepseAPIClient:
 
         return body.get("result")
 
+    async def _post(self, path: str, payload: Any) -> Any:
+        """Execute a POST request and validate the response envelope."""
+        if not path.startswith("/"):
+            path = f"/{path}"
+
+        try:
+            response = await self._client.post(path, json=payload)
+            response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise NepseAPIError(
+                f"Request to {path} timed out after {settings.nepse_http_timeout}s."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise NepseAPIError(
+                f"HTTP {exc.response.status_code} error from {path}",
+                status_code=exc.response.status_code,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise NepseAPIError(f"Network error connecting to NEPSE API: {exc}") from exc
+
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise NepseAPIError(f"Failed to parse JSON response from {path}: {exc}") from exc
+
+        if not isinstance(body, dict):
+            raise NepseAPIError(f"Invalid API response format from {path}: expected JSON object.")
+
+        status_code = body.get("statusCode")
+        if status_code is not None and status_code != 200:
+            message = body.get("message", "Unknown API error")
+            raise NepseAPIError(
+                f"API returned statusCode={status_code}: {message}",
+                status_code=status_code if isinstance(status_code, int) else None,
+            )
+
+        return body.get("result")
+
     # Public endpoint methods
 
     async def get_companies(self) -> list[Company]:
-        """GET /GetCompanies — full list of NEPSE-listed companies."""
-        result = await self._get("/GetCompanies")
+        """POST /GetCompanies — full list of NEPSE-listed companies."""
+        result = await self._post("/GetCompanies", [])
         if not isinstance(result, list):
             return []
         return [Company.model_validate(item) for item in result]
