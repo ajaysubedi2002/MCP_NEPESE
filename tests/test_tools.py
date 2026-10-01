@@ -587,6 +587,30 @@ async def test_get_price_history_summary_tool():
 
 
 @pytest.mark.asyncio
+async def test_evaluate_stock_risk_and_momentum_returns_metrics_for_llm():
+    with respx.mock:
+        respx.get("https://nepalipaisa.com/api/GetStockHistory").mock(
+            return_value=httpx.Response(200, json=LONG_PRICE_HISTORY_RESPONSE)
+        )
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "evaluate_stock_risk_and_momentum",
+                {
+                    "stock_symbol": "ADBL",
+                    "from_date": "2026-08-01",
+                    "to_date": "2026-08-03",
+                },
+            )
+
+    payload = json.loads(result.content[0].text)
+    assert payload["status"] == "success"
+    assert payload["analysis_only"] is True
+    assert payload["data"]["stockSymbol"] == "ADBL"
+    assert payload["data"]["percentReturn"] == 43.0
+    assert payload["analysis_state"]["metrics"]["trend"] == "increasing"
+
+
+@pytest.mark.asyncio
 async def test_get_price_history_summary_marks_incomplete_for_short_history():
     with respx.mock:
         respx.get("https://nepalipaisa.com/api/GetStockHistory").mock(
