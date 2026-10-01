@@ -96,6 +96,31 @@ uv run nepse-mcp
 
 The server registers its tools, resources, and prompt from `src/nepse_mcp/main.py`.
 
+## Conversation-Scoped LangSmith Traces
+
+Create one `ThreadedMCPClient` for each user chat. It generates one UUID and adds
+it to every MCP request as LangSmith `thread_id` metadata. Reuse the wrapper for
+all questions in that chat and call `start_new_thread()` when the user starts a
+new chat.
+
+```python
+from fastmcp import Client
+
+from nepse_mcp.main import mcp
+from nepse_mcp.thread_client import ThreadedMCPClient
+
+async with ThreadedMCPClient(Client(mcp)) as client:
+  await client.run_chat_turn("What is the current price of NABIL?")
+
+  client.start_new_thread()
+```
+
+`run_chat_turn()` creates a parent `chat_turn` trace whose input is the user's
+question and routes the request to the MCP server. Child tool traces inherit the
+same LangSmith `thread_id`. The new thread receives a different ID. Cancelling a
+single request does not require a new ID. The server falls back to its MCP
+session ID when a client does not provide thread metadata.
+
 ## How Jev Routing Works
 
 `route_and_process_request` is the recommended entry point for natural-language NEPSE requests.

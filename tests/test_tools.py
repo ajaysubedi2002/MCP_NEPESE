@@ -4,11 +4,15 @@ import json
 import pytest
 import respx
 import httpx
-from fastmcp import Client
+from fastmcp import Client, FastMCP
+from fastmcp.server.context import Context
+import nepse_mcp.thread_client as thread_client_module
+from nepse_mcp.thread_client import ThreadedMCPClient
 
 # Import the mcp instance AFTER all tools/resources are registered
 from nepse_mcp.config import settings
 from nepse_mcp.main import mcp
+from nepse_mcp.tools import get_thread_metadata
 
 
 # ── Sample payloads ──────────────────────────────────────────────────────────
@@ -851,3 +855,127 @@ async def test_route_and_process_request_falls_back_on_low_confidence(monkeypatc
     payload = json.loads(result.content[0].text)
     assert payload["status"] == "fallback"
     assert payload["execution"]["next_system"] == "system-two-llm"
+
+
+@pytest.mark.asyncio
+async def test_route_and_process_request_executes_compare_stocks(monkeypatch):
+    monkeypatch.setattr(settings, "jevmodel_api_key", "test-key")
+    captured_call = {}
+    original_call_tool = mcp.call_tool
+
+    async def fake_call_tool(name, arguments=None, **kwargs):
+        if name == "compare_stocks":
+            captured_call["name"] = name
+            captured_call["arguments"] = arguments
+            return {"status": "success", "data": {"metric": "closing_price"}}
+        return await original_call_tool(name, arguments, **kwargs)
+
+    monkeypatch.setattr(mcp, "call_tool", fake_call_tool)
+    with respx.mock:
+        respx.post(settings.jev_api_url).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "answers": {
+                        "target_tool": {
+                            "type": "choice",
+                            "choice": "compare_stocks",
+                            "confidence": 0.95,
+                        }
+                    }
+                },
+            )
+        )
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "route_and_process_request",
+                {"user_query": "Compare UPPER and NABIL by closing price"},
+            )
+
+    payload = json.loads(result.content[0].text)
+    assert payload["status"] == "routed"
+    assert captured_call == {
+        "name": "compare_stocks",
+        "arguments": {
+            "stock_symbols": ["UPPER", "NABIL"],
+            "metric": "closing_price",
+        },
+    }
+
+
+class RecordingMCPClient:
+    def __init__(self):
+        self.calls = []
+
+    async def call_tool(self, name, arguments=None, **kwargs):
+        self.calls.append((name, arguments, kwargs))
+        return {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_thread_client_reuses_id_until_new_thread():
+    underlying_client = RecordingMCPClient()
+    client = ThreadedMCPClient(underlying_client)
+
+    await client.call_tool("first", {"value": 1})
+    first_id = client.thread_id
+    await client.call_tool("second", {"value": 2}, meta={"unrelated": "value"})
+    second_id = client.thread_id
+
+    assert first_id == second_id
+    assert underlying_client.calls[0][2]["meta"] == {"thread_id": first_id}
+    assert underlying_client.calls[1][2]["meta"] == {
+        "unrelated": "value",
+        "thread_id": first_id,
+    }
+
+    new_id = client.start_new_thread()
+    await client.call_tool("third")
+
+    assert new_id != first_id
+    assert underlying_client.calls[2][2]["meta"] == {"thread_id": new_id}
+
+
+@pytest.mark.asyncio
+async def test_thread_id_reaches_server_request_metadata():
+    probe_server = FastMCP(name="conversation-probe")
+
+    @probe_server.tool
+    async def read_conversation_metadata(ctx: Context) -> dict:
+        return get_thread_metadata()
+
+    async with ThreadedMCPClient(Client(probe_server)) as client:
+        result = await client.call_tool("read_conversation_metadata")
+
+    payload = json.loads(result.content[0].text)
+    assert payload["thread_id"] == client.thread_id
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_passes_user_query_and_thread_id(monkeypatch):
+    def fake_traceable(**_):
+        def decorator(function):
+            async def wrapped(*args, **kwargs):
+                return await function(*args)
+
+            return wrapped
+
+        return decorator
+
+    monkeypatch.setattr(
+        thread_client_module,
+        "traceable",
+        fake_traceable,
+    )
+    underlying_client = RecordingMCPClient()
+    client = ThreadedMCPClient(underlying_client)
+
+    await client.run_chat_turn("What is the current price of NABIL?")
+
+    assert underlying_client.calls == [
+        (
+            "route_and_process_request",
+            {"user_query": "What is the current price of NABIL?"},
+            {"meta": {"thread_id": client.thread_id}},
+        )
+    ]
