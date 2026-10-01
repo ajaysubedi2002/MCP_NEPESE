@@ -169,7 +169,7 @@ PRICE_HISTORY_SUMMARY_RESPONSE = {
                 "percentChange": 2.04,
             },
             {
-                "sn": 2,
+                "sn": 2,    
                 "tradeDate": "2026-08-02T00:00:00",
                 "tradeDateString": "2026-08-02",
                 "maxPrice": 106.0,
