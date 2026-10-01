@@ -103,7 +103,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @traced_tool(
+    @tred_tool(
         name="get_dividend_history",
         description=(
             "Retrieve historical corporate actions, specifically bonus shares, "
@@ -374,7 +374,7 @@ def register_tools(mcp) -> None:
         except JevAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @mcp.tool(
+    @traced_tool(
         name="evaluate_stock_risk_and_momentum",
         description=(
             "Evaluate a stock's historical momentum, volatility, market condition, and "
@@ -431,7 +431,7 @@ def register_tools(mcp) -> None:
                     },
                 },
                 "execution_safety": {
-                    "type": "noul",
+                    "type": "null",
                     "instructions": (
                         "Assess whether the available market data is sufficient for "
                         "automated trade execution; do not issue a trade instruction."
@@ -453,6 +453,7 @@ def register_tools(mcp) -> None:
         "get_live_market_data",
         "get_dividend_history",
         "get_top_market_movers",
+        "evaluate_stock_risk_and_momentum",
     }
     routing_questions = {
         "target_tool": {
@@ -467,6 +468,7 @@ def register_tools(mcp) -> None:
                 "get_dividend_history": "Get dividend, bonus, cash, or fiscal-year history",
                 "get_top_market_movers": "Find top gainers, losers, turnover, or volume",
                 "llm_fallback": "Ambiguous or multi-step reasoning requests",
+                "evaluate_stock_risk_and_momentum":"Evaluate historical momentum, volatility, market condition,risk, or execution safety for one stock over a date range"
             },
         }
     }
@@ -489,11 +491,11 @@ def register_tools(mcp) -> None:
             return {"stock_symbol": clean_ticker(symbols[0]), "from_date": dates[0], "to_date": dates[1]}
         return None
 
-    @mcp.tool(
+    @traced_tool(
         name="route_and_process_request",
         description=(
-            "Recommended entry point for NEPSE requests. Uses Jev System One for intent "
-            "classification and delegates uncertain or complex requests to System Two."
+            "Recommended entry point for NEPSE requests. Uses Jev System One "
+            "for intent classification and delegates uncertain requests to System Two."
         ),
     )
     async def route_and_process_request(user_query: Annotated[str, "The user's NEPSE request."]) -> dict:
