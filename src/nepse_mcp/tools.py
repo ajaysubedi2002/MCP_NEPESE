@@ -1,6 +1,8 @@
 import json
 import re
+from functools import wraps
 from typing import Any, Annotated, Literal, Optional
+from fastmcp.server.dependencies import get_context
 from langsmith import traceable
 
 from nepse_mcp.client import NepseAPIClient
@@ -21,6 +23,25 @@ from nepse_mcp.utils import (
 )
 
 
+def get_thread_metadata() -> dict[str, str]:
+    """Read the LangSmith thread ID from the active MCP request."""
+    try:
+        context = get_context()
+    except RuntimeError:
+        return {}
+
+    request_context = context.request_context
+    request_meta = request_context.meta if request_context else None
+    thread_id = request_meta.get("thread_id") if request_meta else None
+    if isinstance(thread_id, str) and thread_id.strip():
+        return {"thread_id": thread_id.strip()}
+
+    try:
+        return {"thread_id": context.session_id}
+    except RuntimeError:
+        return {}
+
+
 def register_tools(mcp) -> None:
     """Register all MCP tools on the given FastMCP instance."""
 
@@ -31,7 +52,19 @@ def register_tools(mcp) -> None:
                 run_type="tool",
                 tags=["mcp", "nepse", name],
             )(function)
-            return mcp.tool(name=name, description=description)(traced_function)
+
+            @wraps(function)
+            async def contextual_traced_function(*args, **kwargs):
+                metadata = get_thread_metadata()
+                if metadata:
+                    return await traced_function(
+                        *args,
+                        langsmith_extra={"metadata": metadata},
+                        **kwargs,
+                    )
+                return await traced_function(*args, **kwargs)
+
+            return mcp.tool(name=name, description=description)(contextual_traced_function)
 
         return decorator
 
@@ -103,7 +136,7 @@ def register_tools(mcp) -> None:
         except NepseAPIError as exc:
             return build_tool_response(status="error", error_message=str(exc))
 
-    @tred_tool(
+    @traced_tool(
         name="get_dividend_history",
         description=(
             "Retrieve historical corporate actions, specifically bonus shares, "
@@ -476,7 +509,13 @@ def register_tools(mcp) -> None:
     def extract_route_arguments(query: str, tool_name: str) -> dict[str, Any] | None:
         """Extract only simple, unambiguous arguments; never guess complex ones."""
         words = re.findall(r"\b[A-Za-z][A-Za-z0-9.&-]{1,19}\b", query)
-        excluded = {"WHAT", "SHOW", "THE", "CURRENT", "PRICE", "OF", "FOR", "AND", "FROM", "TO"}
+        excluded = {
+            "WHAT", "SHOW", "THE", "CURRENT", "PRICE", "OF", "FOR", "AND", "FROM", "TO",
+            "COMPARE", "COMPARING", "STOCK", "STOCKS", "BY", "WITH", "RETURN", "RETURNS",
+            "CLOSING", "CLOSE", "PERCENT", "CHANGE", "VOLUME", "TURNOVER", "SHARES",
+            "TRADED", "TOP", "GAINERS", "MARKET", "MOVERS", "RISK", "MOMENTUM", "ANALYZE",
+            "ANALYSIS", "SAFETY", "EXECUTION",
+        }
         symbols = [word.upper() for word in words if word.upper() not in excluded]
         dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", query)
         if tool_name == "search_companies":
@@ -486,6 +525,38 @@ def register_tools(mcp) -> None:
                 return None
             return {"stock_symbol": clean_ticker(symbols[0])}
         if tool_name == "get_price_history_summary":
+            if not symbols or len(dates) < 2:
+                return None
+            return {"stock_symbol": clean_ticker(symbols[0]), "from_date": dates[0], "to_date": dates[1]}
+        if tool_name == "compare_stocks":
+            query_lower = query.lower()
+            if len(symbols) < 2:
+                return None
+            if "30d" in query_lower or "30 day" in query_lower or "return" in query_lower:
+                metric = "30d_return"
+            elif "turnover" in query_lower:
+                metric = "turnover"
+            elif "volume" in query_lower or "shares traded" in query_lower:
+                metric = "volume"
+            elif "percent" in query_lower or "%" in query_lower or "change" in query_lower:
+                metric = "percent_change"
+            elif "closing" in query_lower or "close" in query_lower or "price" in query_lower:
+                metric = "closing_price"
+            else:
+                return None
+            return {"stock_symbols": [clean_ticker(symbol) for symbol in symbols], "metric": metric}
+        if tool_name == "get_top_market_movers":
+            query_lower = query.lower()
+            if "turnover" in query_lower:
+                indicator = "turnover"
+            elif "volume" in query_lower or "shares traded" in query_lower:
+                indicator = "sharestraded"
+            elif "gainer" in query_lower or "winner" in query_lower:
+                indicator = "gainers"
+            else:
+                return None
+            return {"indicator": indicator}
+        if tool_name == "evaluate_stock_risk_and_momentum":
             if not symbols or len(dates) < 2:
                 return None
             return {"stock_symbol": clean_ticker(symbols[0]), "from_date": dates[0], "to_date": dates[1]}
